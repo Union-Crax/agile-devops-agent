@@ -58,7 +58,7 @@ AGILE uses **OpenAI Function Calling** (tool use) to create a true agentic syste
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │                       CLI Interface                         │
-│  (commander + chalk + ora for beautiful terminal output)     │
+│  (commander + chalk + ora for beautiful terminal output)    │
 └─────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -144,7 +144,7 @@ npm run build
 
 - **Node.js** >= 18.0.0
 - **npm** >= 8.0.0
-- An **OpenAI API key** with access to `gpt-4o`
+- An **OpenAI API key**
 
 ## Configuration
 
