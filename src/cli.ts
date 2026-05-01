@@ -74,6 +74,19 @@ async function resolveApiKey(): Promise<{ value?: string; source: EnvSource }> {
   return { source: "unset" }
 }
 
+function isBillingError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase()
+    return (
+      msg.includes("insufficient_quota") ||
+      msg.includes("exceeded your current quota") ||
+      msg.includes("you exceeded your current quota")
+    )
+  }
+  const apiErr = err as { status?: number; error?: { code?: string } }
+  return apiErr?.status === 429 && apiErr?.error?.code === "insufficient_quota"
+}
+
 async function resolveModel(cliModel?: string): Promise<string> {
   const config = await loadCliConfig()
   const resolution = resolveModelSelection({
@@ -83,6 +96,37 @@ async function resolveModel(cliModel?: string): Promise<string> {
     fallbackModel: "gpt-4o-mini",
   })
   return resolution.model
+}
+
+// -- Model Picker -------------------------------------------------------------
+
+const KNOWN_MODELS = [
+  { id: "gpt-4o-mini",  label: "GPT-4o mini",   desc: "Cheapest & fastest, great for most tasks",    price: "$0.15/1M in" },
+  { id: "gpt-4o",       label: "GPT-4o",         desc: "Best overall, fast",                          price: "$2.50/1M in" },
+  { id: "gpt-5-mini",   label: "GPT-5 mini",     desc: "Fast + very capable",                        price: "$0.50/1M in" },
+  { id: "gpt-5",        label: "GPT-5",           desc: "Most capable",                               price: "$5.00/1M in" },
+  { id: "o1-mini",      label: "o1-mini",         desc: "Chain-of-thought reasoning",                 price: "$3.00/1M in" },
+  { id: "o1-preview",   label: "o1-preview",      desc: "Advanced reasoning",                        price: "$15.00/1M in" },
+  { id: "gpt-4-turbo",  label: "GPT-4 Turbo",    desc: "High quality, long context",                 price: "$10.00/1M in" },
+]
+
+async function selectModel(rl: readline.Interface, currentModel: string): Promise<string> {
+  console.log()
+  console.log(chalk.bold("  Choose a model:"))
+  console.log()
+  KNOWN_MODELS.forEach((m, i) => {
+    const active = m.id === currentModel
+    const marker = active ? chalk.cyan("*") : " "
+    const num = chalk.dim(`${i + 1}.`)
+    const label = active ? chalk.cyan.bold(m.label.padEnd(14)) : chalk.white(m.label.padEnd(14))
+    console.log(`  ${marker} ${num} ${label}  ${chalk.gray(m.desc.padEnd(42))}  ${chalk.dim(m.price)}`)
+  })
+  console.log()
+  const ans = (await rl_question(rl, chalk.bold(`  [1-${KNOWN_MODELS.length}] or model ID: `))).trim()
+  if (!ans) return currentModel
+  const n = parseInt(ans, 10)
+  if (!isNaN(n) && n >= 1 && n <= KNOWN_MODELS.length) return KNOWN_MODELS[n - 1].id
+  return ans // allow typing a custom model ID
 }
 
 // â”€â”€ First-launch Setup Wizard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -107,10 +151,7 @@ async function runSetupWizard(): Promise<{ apiKey: string; model: string }> {
   const config = await loadCliConfig()
   const currentModel = config.defaultModelRef || "gpt-4o-mini"
 
-  console.log()
-  console.log(chalk.gray("  Models: gpt-4o, gpt-4o-mini, gpt-4-turbo, o1-mini, gpt-5, gpt-5-mini"))
-  const modelRaw = await rl_question(rl, chalk.bold(`  Default model [${currentModel}]: `))
-  const model = modelRaw.trim() || currentModel
+  const model = await selectModel(rl, currentModel)
 
   rl.close()
 
@@ -161,6 +202,9 @@ const TOOL_LABELS: Record<string, string> = {
 }
 
 function buildCallbacks(verbose: boolean): AgentCallbacks {
+  const warnedThresholds = new Set<number>()
+  const COST_WARN_THRESHOLDS = [1, 5, 10]
+
   return {
     onStep: () => {},
     onThinking: (thought) => {
@@ -180,6 +224,19 @@ function buildCallbacks(verbose: boolean): AgentCallbacks {
       if (!success) {
         const preview = output.replace(/\n/g, " ").slice(0, 120)
         console.log(chalk.red(`  ! ${preview}`))
+      }
+    },
+    onApiCall: ({ costUSD, promptTokens, completionTokens, totalCostUSD }) => {
+      const tokens = promptTokens + completionTokens
+      if (tokens > 0) {
+        const kTok = (tokens / 1000).toFixed(1)
+        console.log(chalk.dim(`     $${costUSD.toFixed(5)}  ${kTok}k tokens`))
+      }
+      for (const threshold of COST_WARN_THRESHOLDS) {
+        if (totalCostUSD >= threshold && !warnedThresholds.has(threshold)) {
+          warnedThresholds.add(threshold)
+          console.log(chalk.yellow(`\n  ! Session spend exceeded $${threshold}.00 — check /settings for usage.\n`))
+        }
       }
     },
     onUserQuestion: createInteractiveInputHandler(),
@@ -208,16 +265,19 @@ async function showSettings(rl: readline.Interface, sessionUsage: UsageStats): P
   console.log()
   console.log(chalk.bold("  Session usage"))
   console.log(
-    `  ${sessionUsage.apiCalls} calls  ${sessionUsage.totalTokens.toLocaleString()} tokens  ~$${sessionUsage.estimatedCostUSD.toFixed(4)}`,
+    `  ${sessionUsage.apiCalls} calls  ${sessionUsage.totalTokens.toLocaleString("en-US")} tokens  ~$${sessionUsage.estimatedCostUSD.toFixed(4)}`,
 
   )
 
   if (lifetime && (lifetime.sessions > 0 || lifetime.totalTokens > 0)) {
+    // Merge saved lifetime with current session so the display is up-to-date
+    const liveSessions = lifetime.sessions + 1
+    const liveTokens = lifetime.totalTokens + sessionUsage.totalTokens
+    const liveCost = lifetime.estimatedCostUSD + sessionUsage.estimatedCostUSD
     console.log()
     console.log(chalk.bold("  Lifetime usage"))
     console.log(
-      `  ${lifetime.sessions} sessions  ${lifetime.totalTokens.toLocaleString()} tokens  ~$${lifetime.estimatedCostUSD.toFixed(4)}`,
-
+      `  ${liveSessions} sessions  ${liveTokens.toLocaleString("en-US")} tokens  ~$${liveCost.toFixed(4)}`,
     )
   }
 
@@ -229,12 +289,11 @@ async function showSettings(rl: readline.Interface, sessionUsage: UsageStats): P
   const choice = (await rl_question(rl, chalk.bold("  > "))).trim().toLowerCase()
 
   if (choice === "m") {
-    const raw = (await rl_question(rl, `  New model [${model}]: `)).trim()
-    const newModel = raw || model
+    const newModel = await selectModel(rl, model)
     if (newModel !== model) {
       config.defaultModelRef = newModel
       await saveCliConfig(config)
-      console.log(chalk.green(`  Model set to ${newModel}  (restart agile to apply)`))
+      console.log(chalk.green(`  Model set to ${newModel}  (takes effect next session)`))
     }
   } else if (choice === "k") {
     const raw = (await rl_question(rl, "  New API key: ")).trim()
@@ -285,7 +344,7 @@ function printResult(
   }
   console.log(
     chalk.dim(
-      `\n  ${usage.apiCalls} calls  ${usage.totalTokens.toLocaleString()} tokens  ~$${usage.estimatedCostUSD.toFixed(4)}\n`,
+      `\n  ${usage.apiCalls} calls  ${usage.totalTokens.toLocaleString("en-US")} tokens  ~$${usage.estimatedCostUSD.toFixed(4)}\n`,
 
     ),
   )
@@ -359,6 +418,13 @@ async function startRepl(
 
   try {
     await agent.interactiveSession(sessionIterator())
+  } catch (err) {
+    if (isBillingError(err)) {
+      console.log(chalk.red.bold("\n  Insufficient API credits."))
+      console.log(chalk.gray("  Add credits at: https://platform.openai.com/settings/organization/billing\n"))
+    } else {
+      throw err
+    }
   } finally {
     await saveLifetimeUsage(agent.getUsage().getStats())
     rl.close()
@@ -386,7 +452,17 @@ async function runTask(
   if (verbose) console.log(chalk.gray(`  Model: ${model}\n`))
   if (dryRun) console.log(chalk.yellow.bold("  [DRY RUN]\n"))
 
-  const result = await agent.executeTask(task)
+  let result
+  try {
+    result = await agent.executeTask(task)
+  } catch (err) {
+    if (isBillingError(err)) {
+      console.log(chalk.red.bold("\n  Insufficient API credits."))
+      console.log(chalk.gray("  Add credits at: https://platform.openai.com/settings/organization/billing\n"))
+      process.exit(1)
+    }
+    throw err
+  }
   const usage = agent.getUsage().getStats()
 
   printResult(result, usage)

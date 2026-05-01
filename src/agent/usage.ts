@@ -44,10 +44,15 @@ export class UsageTracker {
   }
 
   /**
-   * Record usage from an OpenAI API response
+   * Record usage from an OpenAI API response.
+   * Returns the cost delta for this single call.
    */
-  record(usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }): void {
-    if (!usage) return
+  record(usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }): {
+    promptTokens: number
+    completionTokens: number
+    costUSD: number
+  } {
+    if (!usage) return { promptTokens: 0, completionTokens: 0, costUSD: 0 }
 
     const promptTokens = usage.prompt_tokens || 0
     const completionTokens = usage.completion_tokens || 0
@@ -60,9 +65,11 @@ export class UsageTracker {
 
     // Calculate cost
     const pricing = this.getPricing()
-    const inputCost = (promptTokens / 1_000_000) * pricing.input
-    const outputCost = (completionTokens / 1_000_000) * pricing.output
-    this.stats.estimatedCostUSD += inputCost + outputCost
+    const costUSD =
+      (promptTokens / 1_000_000) * pricing.input + (completionTokens / 1_000_000) * pricing.output
+    this.stats.estimatedCostUSD += costUSD
+
+    return { promptTokens, completionTokens, costUSD }
   }
 
   private getPricing(): { input: number; output: number } {
@@ -87,9 +94,9 @@ export class UsageTracker {
   format(): string {
     const lines = [
       `API calls:        ${this.stats.apiCalls}`,
-      `Prompt tokens:    ${this.stats.promptTokens.toLocaleString()}`,
-      `Completion tokens: ${this.stats.completionTokens.toLocaleString()}`,
-      `Total tokens:     ${this.stats.totalTokens.toLocaleString()}`,
+      `Prompt tokens:    ${this.stats.promptTokens.toLocaleString("en-US")}`,
+      `Completion tokens: ${this.stats.completionTokens.toLocaleString("en-US")}`,
+      `Total tokens:     ${this.stats.totalTokens.toLocaleString("en-US")}`,
       `Estimated cost:   $${this.stats.estimatedCostUSD.toFixed(4)} USD`,
       `Model:            ${this.model}`,
     ]

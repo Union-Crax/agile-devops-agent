@@ -53,6 +53,7 @@ export interface AgentCallbacks {
   onToolCall?: (name: string, args: Record<string, unknown>) => void
   onToolResult?: (name: string, success: boolean, output: string) => void
   onStep?: (step: number, maxSteps: number) => void
+  onApiCall?: (delta: { promptTokens: number; completionTokens: number; costUSD: number; totalCostUSD: number }) => void
   onUserQuestion?: UserInputHandler
 }
 
@@ -235,8 +236,12 @@ export class AgentCore {
         parallel_tool_calls: true,
       })
 
-      // Track token usage
-      this.usage.record(response.usage)
+      // Track token usage and fire per-call callback
+      const callDelta = this.usage.record(response.usage)
+      this.callbacks.onApiCall?.({
+        ...callDelta,
+        totalCostUSD: this.usage.getStats().estimatedCostUSD,
+      })
 
       const message = response.choices[0]?.message
       if (!message) {
@@ -529,7 +534,11 @@ export class AgentCore {
           parallel_tool_calls: true,
         })
 
-        this.usage.record(response.usage)
+        const callDelta = this.usage.record(response.usage)
+        this.callbacks.onApiCall?.({
+          ...callDelta,
+          totalCostUSD: this.usage.getStats().estimatedCostUSD,
+        })
 
         const message = response.choices[0]?.message
         if (!message) break
