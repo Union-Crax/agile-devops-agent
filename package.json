@@ -1,6 +1,6 @@
 {
   "name": "agile-devops-agent",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Multi-step DevOps Agent powered by OpenAI - Analyze, Deploy, Monitor, Fix",
   "private": false,
   "type": "module",
