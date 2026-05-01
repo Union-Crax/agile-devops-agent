@@ -697,10 +697,11 @@ program
     const model = await resolveModel(opts.model)
     const task = taskParts.join(" ").trim()
 
-    if (task) {
-      await runTask(task, apiKey, model, workDir, opts.verbose, opts.dryRun)
-    } else {
+    const REPL_SHORTCUTS = ["i", "interactive"]
+    if (!task || REPL_SHORTCUTS.includes(task.toLowerCase())) {
       await startRepl(apiKey, model, workDir, opts.verbose, opts.dryRun)
+    } else {
+      await runTask(task, apiKey, model, workDir, opts.verbose, opts.dryRun)
     }
   })
 

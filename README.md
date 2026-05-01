@@ -122,8 +122,20 @@ while (!task.isComplete && steps < maxSteps) {
 
 ### From npm (recommended)
 
+Install **globally** so the `agile` command is available anywhere in your terminal:
+
 ```bash
 npm install -g agile-devops-agent
+# or
+pnpm add -g agile-devops-agent
+# or
+yarn global add agile-devops-agent
+```
+
+Then run `agile` from any directory — no `npx`, no `npm run`, just:
+
+```bash
+agile
 ```
 
 ### From source
@@ -138,6 +150,9 @@ npm install
 
 # Build
 npm run build
+
+# Link globally
+npm link
 ```
 
 ## Requirements
@@ -162,14 +177,17 @@ OPENAI_API_KEY=your-api-key-here
 ## Usage
 
 ```bash
-# Run a task
+# Start interactive mode (REPL)
+agile
+agile i
+
+# Run a one-shot task
 agile "deploy this project to Vercel"
-
-# Analyze a codebase
 agile "why is my build failing?"
-
-# Fix issues automatically
 agile "find and fix all TypeScript errors"
+
+# First-time setup (API key + model)
+agile setup
 ```
 
 ---
