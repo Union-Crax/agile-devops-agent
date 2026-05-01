@@ -7,12 +7,12 @@ A real AI system that uses OpenAI's function calling to analyze codebases, deplo
 ```text
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║            █████╗  ██████╗ ██╗██╗     ███████╗            ║
-║           ██╔══██╗██╔════╝ ██║██║     ██╔════╝            ║
-║           ███████║██║  ███╗██║██║     █████╗              ║
-║           ██╔══██║██║   ██║██║██║     ██╔══╝              ║
-║           ██║  ██║╚██████╔╝██║███████╗███████╗            ║
-║           ╚═╝  ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝            ║
+║      █████╗  ██████╗ ██╗██╗     ███████╗                  ║
+║     ██╔══██╗██╔════╝ ██║██║     ██╔════╝                  ║
+║     ███████║██║  ███╗██║██║     █████╗                    ║
+║     ██╔══██║██║   ██║██║██║     ██╔══╝                    ║
+║     ██║  ██║╚██████╔╝██║███████╗███████╗                  ║
+║     ╚═╝  ╚═╝ ╚═════╝ ╚═╝╚══════╝╚══════╝                  ║
 ║                                                           ║
 ║         Multi-step DevOps Agent powered by OpenAI         ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -108,7 +108,7 @@ while (!task.isComplete && steps < maxSteps) {
 
 ```bash
 # Clone the repository
-git clone https://github.com/UnionCrax/AGILE.git
+git clone https://github.com/yourusername/agile-devops-agent.git
 cd agile-devops-agent
 
 # Install dependencies
@@ -116,45 +116,4 @@ npm install
 
 # Set your OpenAI API key
 export OPENAI_API_KEY=your-api-key-here
-```
-
-## How to Run
-
-### Analyze a Codebase
-
-```bash
-# Analyze the current directory
-npm run agile analyze
-
-# Or specify a path
-npm run agile analyze ./my-project
-```
-
-The agent will:
-1. Detect the project framework and configuration
-2. Check dependencies for outdated packages
-3. Run security audits
-4. Analyze code quality
-5. Provide a comprehensive report with recommendations
-
-### Deploy an Application
-
-```bash
-# Deploy to Vercel (default)
-npm run agile deploy
-
-# Deploy to Vercel production
-npm run agile deploy vercel --env production
-
-# Deploy with Docker
-npm run agile deploy docker
-
-# Generic Git-based deployment
-npm run agile deploy generic
-```
-
-### Monitor a Deployment
-
-```bash
-npm run agile monitor https://your-site.vercel.app
 ```

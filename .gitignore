@@ -5,3 +5,4 @@ dist/
 .agile-memory.json
 .env
 combined.log
+*.tgz

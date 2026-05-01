@@ -1,5 +1,5 @@
-import { spawn } from "child_process";
 import type { DeploymentConfig, ToolResult, AgentConfig } from "../agent/types";
+import { runProcess } from "../runtime/exec";
 
 /**
  * Generic Platform Adapter
@@ -14,31 +14,9 @@ async function executeCommand(
   cwd: string,
   timeout: number = 120000
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    const proc = spawn(command, args, {
-      cwd,
-      timeout,
-      env: { ...process.env },
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout?.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr?.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
-
-    proc.on("error", (err) => {
-      resolve({ stdout: "", stderr: err.message, exitCode: 1 });
-    });
+  return runProcess(command, args, {
+    cwd,
+    timeoutMs: timeout,
   });
 }
 

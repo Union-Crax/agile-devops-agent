@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
-import { spawn } from "child_process";
 import type { ToolDefinition, ToolResult, AgentConfig } from "../agent/types";
+import { runProcess } from "../runtime/exec";
 
 /**
  * Code analysis tools for quality, security, and dependency checks
@@ -12,27 +12,9 @@ async function executeCommand(
   args: string[],
   cwd: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    const proc = spawn(command, args, { cwd, timeout: 60000 });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout?.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr?.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
-
-    proc.on("error", (err) => {
-      resolve({ stdout: "", stderr: err.message, exitCode: 1 });
-    });
+  return runProcess(command, args, {
+    cwd,
+    timeoutMs: 60000,
   });
 }
 

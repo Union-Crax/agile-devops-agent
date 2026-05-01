@@ -1,4 +1,6 @@
 import { spawn } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 import type { ToolDefinition, ToolResult, AgentConfig } from "../agent/types";
 
 /**
@@ -203,8 +205,8 @@ async function installDependencies(
   args: Record<string, unknown>,
   config: AgentConfig
 ): Promise<ToolResult> {
-  // Detect package manager
-  const packageManager = (args.packageManager as string) || "npm";
+  const packageManager =
+    (args.packageManager as string | undefined) || detectPackageManager(config.workingDirectory);
   const packages = args.packages as string[] | undefined;
 
   let cmd: string;
@@ -252,6 +254,32 @@ async function installDependencies(
     success: result.exitCode === 0,
     output: `Dependency installation ${result.exitCode === 0 ? "succeeded" : "failed"}:\n\n${result.stdout}\n${result.stderr}`,
   };
+}
+
+function detectPackageManager(cwd: string): "npm" | "yarn" | "pnpm" | "bun" {
+  const has = (filename: string) => fs.existsSync(path.join(cwd, filename));
+
+  if (has("pnpm-lock.yaml")) return "pnpm";
+  if (has("yarn.lock")) return "yarn";
+  if (has("bun.lockb") || has("bun.lock")) return "bun";
+  if (has("package-lock.json") || has("npm-shrinkwrap.json")) return "npm";
+
+  const packageJsonPath = path.join(cwd, "package.json");
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      const packageJsonRaw = fs.readFileSync(packageJsonPath, "utf-8");
+      const packageJson = JSON.parse(packageJsonRaw) as { packageManager?: string };
+      const declared = packageJson.packageManager?.toLowerCase() || "";
+      if (declared.startsWith("pnpm@")) return "pnpm";
+      if (declared.startsWith("yarn@")) return "yarn";
+      if (declared.startsWith("bun@")) return "bun";
+      if (declared.startsWith("npm@")) return "npm";
+    } catch {
+      // Ignore malformed package.json and fall through to default.
+    }
+  }
+
+  return "npm";
 }
 
 export const shellTools: ToolDefinition[] = [

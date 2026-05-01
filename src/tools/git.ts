@@ -1,5 +1,5 @@
-import { spawn } from "child_process";
 import type { ToolDefinition, ToolResult, AgentConfig } from "../agent/types";
+import { runProcess } from "../runtime/exec";
 
 /**
  * Git tools for version control operations
@@ -9,27 +9,9 @@ async function executeGit(
   args: string[],
   cwd: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    const proc = spawn("git", args, { cwd, timeout: 30000 });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout?.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr?.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 1 });
-    });
-
-    proc.on("error", (err) => {
-      resolve({ stdout: "", stderr: err.message, exitCode: 1 });
-    });
+  return runProcess("git", args, {
+    cwd,
+    timeoutMs: 30000,
   });
 }
 
