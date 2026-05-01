@@ -46,15 +46,42 @@ IMPORTANT GUIDELINES:
 10. Provide clear feedback about what you're doing at each step
 11. Save important findings using add_discovery so future runs benefit
 
+FILE EDITING RULES (critical - follow strictly):
+- ALWAYS use replace_in_file to edit existing files. NEVER use write_file on a file that already exists.
+- write_file OVERWRITES the entire file. Using it on an existing file will destroy all content not included in your write.
+- Before calling replace_in_file, read the file first so old_str is the exact current content.
+- If a file is large and truncated in read_file output, use maxLines with a higher value to read the full file before editing.
+- If replace_in_file fails: use the "Nearest matching content" snippet it returns as your new old_str. Do NOT guess or retry with slight variations — use exactly what the file actually contains.
+- If replace_in_file fails and shows no nearby content: call read_file on that file again, find the exact text, then retry once. If it fails again, stop and report the problem to the user.
+PLATFORM RULES:
+- You are running on Windows with PowerShell as the shell.
+- Use PowerShell commands, NOT Unix commands. Examples:
+  - Use Get-Content instead of cat
+  - Use Remove-Item instead of rm
+  - Use Copy-Item instead of cp / mv
+  - Use New-Item instead of touch/mkdir
+  - Use Get-ChildItem instead of ls
+  - Chain commands with ; or use separate tool calls — NOT && or ||
+- Use the read_file tool to read file contents rather than running shell commands like cat/type.
 You are running in the context of a CLI tool. Be concise but informative.`
 
 export interface AgentCallbacks {
   onThinking?: (thought: string, plan?: string[]) => void
   onToolCall?: (name: string, args: Record<string, unknown>) => void
-  onToolResult?: (name: string, success: boolean, output: string) => void
+  onToolResult?: (name: string, success: boolean, output: string, args: Record<string, unknown>) => void
   onStep?: (step: number, maxSteps: number) => void
   onApiCall?: (delta: { promptTokens: number; completionTokens: number; costUSD: number; totalCostUSD: number }) => void
   onUserQuestion?: UserInputHandler
+  /** Called once just before an API request is sent (good place to show a waiting indicator) */
+  onApiStart?: () => void
+  /** Called when the first streamed text chunk arrives */
+  onStreamStart?: () => void
+  /** Called for each streamed text chunk */
+  onStreamChunk?: (text: string) => void
+  /** Called after the last streamed text chunk */
+  onStreamEnd?: () => void
+  /** Called at the end of each task (one-shot or per-message in REPL) */
+  onTaskEnd?: () => void
 }
 
 export class AgentCore {
@@ -78,6 +105,11 @@ export class AgentCore {
 
   getUsage(): UsageTracker {
     return this.usage
+  }
+
+  setModel(model: string): void {
+    this.config.model = model
+    this.usage = new UsageTracker(model)
   }
 
   private buildOpenAITools(): ChatCompletionTool[] {
@@ -202,6 +234,86 @@ export class AgentCore {
   }
 
   /**
+   * Call the chat completion API with streaming.
+   * Fires onApiStart before the request, onStreamStart/Chunk/End for text output.
+   * Returns the fully assembled message and usage data.
+   */
+  private async streamedCompletion(messages: ChatCompletionMessageParam[]): Promise<{
+    message: { role: "assistant"; content: string | null; tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] }
+    usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+  }> {
+    this.callbacks.onApiStart?.()
+
+    const stream = await this.openai.chat.completions.create({
+      model: this.config.model,
+      messages,
+      tools: this.openaiTools,
+      tool_choice: "auto",
+      parallel_tool_calls: true,
+      stream: true,
+      stream_options: { include_usage: true },
+    })
+
+    let contentAcc = ""
+    let streamStarted = false
+    let usageData: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+
+    // index → accumulated tool call fragments
+    const toolCallsAcc = new Map<number, { id: string; name: string; arguments: string }>()
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta
+
+      if (delta?.content) {
+        if (!streamStarted) {
+          streamStarted = true
+          this.callbacks.onStreamStart?.()
+        }
+        contentAcc += delta.content
+        this.callbacks.onStreamChunk?.(delta.content)
+      }
+
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index
+          if (!toolCallsAcc.has(idx)) {
+            toolCallsAcc.set(idx, { id: "", name: "", arguments: "" })
+          }
+          const entry = toolCallsAcc.get(idx)!
+          if (tc.id) entry.id = tc.id
+          if (tc.function?.name) entry.name += tc.function.name
+          if (tc.function?.arguments) entry.arguments += tc.function.arguments
+        }
+      }
+
+      if (chunk.usage) {
+        usageData = chunk.usage
+      }
+    }
+
+    if (streamStarted) {
+      this.callbacks.onStreamEnd?.()
+    }
+
+    const toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = Array.from(toolCallsAcc.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => ({
+        id: tc.id,
+        type: "function" as const,
+        function: { name: tc.name, arguments: tc.arguments },
+      }))
+
+    return {
+      message: {
+        role: "assistant",
+        content: contentAcc || null,
+        ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
+      },
+      usage: usageData,
+    }
+  }
+
+  /**
    * Execute a task with the agent
    */
   async executeTask(taskDescription: string): Promise<TaskResult> {
@@ -224,38 +336,43 @@ export class AgentCore {
       memory,
     }
 
+    let consecutiveFailures = 0
+    const MAX_CONSECUTIVE_FAILURES = 3
+
     while (!state.isComplete && state.stepCount < this.config.maxSteps) {
       state.stepCount++
       this.callbacks.onStep?.(state.stepCount, this.config.maxSteps)
 
-      const response = await this.openai.chat.completions.create({
-        model: this.config.model,
-        messages: state.conversationHistory,
-        tools: this.openaiTools,
-        tool_choice: "auto",
-        parallel_tool_calls: true,
-      })
+      const { message, usage } = await this.streamedCompletion(state.conversationHistory)
 
       // Track token usage and fire per-call callback
-      const callDelta = this.usage.record(response.usage)
+      const callDelta = this.usage.record(usage)
       this.callbacks.onApiCall?.({
         ...callDelta,
         totalCostUSD: this.usage.getStats().estimatedCostUSD,
       })
 
-      const message = response.choices[0]?.message
-      if (!message) {
-        throw new Error("No response from OpenAI")
-      }
-
       state.conversationHistory.push(message as ChatCompletionMessageParam)
-
-      if (message.content && this.config.verbose) {
-        console.log(`\n[Agent]: ${message.content}`)
-      }
 
       if (message.tool_calls && message.tool_calls.length > 0) {
         const toolResults = await this.handleToolCallsParallel(message.tool_calls, state)
+
+        const batchAllFailed = toolResults.every((r) => !r.isCompletion && !r.success)
+        if (batchAllFailed) {
+          consecutiveFailures++
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            state.isComplete = true
+            state.result = {
+              success: false,
+              summary: `Stopped after ${MAX_CONSECUTIVE_FAILURES} consecutive tool failures`,
+              details: [],
+              errors: ["Too many consecutive tool failures — try rephrasing the task"],
+            }
+            break
+          }
+        } else {
+          consecutiveFailures = 0
+        }
 
         for (const result of toolResults) {
           if (result.isCompletion) {
@@ -288,6 +405,8 @@ export class AgentCore {
       }
     }
 
+    this.callbacks.onTaskEnd?.()
+
     if (!state.isComplete) {
       return {
         success: false,
@@ -316,6 +435,7 @@ export class AgentCore {
     {
       message: ChatCompletionToolMessageParam
       isCompletion: boolean
+      success: boolean
       taskResult?: TaskResult
     }[]
   > {
@@ -333,6 +453,7 @@ export class AgentCore {
   ): Promise<{
     message: ChatCompletionToolMessageParam
     isCompletion: boolean
+    success: boolean
     taskResult?: TaskResult
   }> {
     // Narrow to function tool calls (we don't use custom tools)
@@ -344,6 +465,7 @@ export class AgentCore {
           content: "Unsupported tool call type",
         },
         isCompletion: false,
+        success: false,
       }
     }
 
@@ -366,7 +488,7 @@ export class AgentCore {
         details: (args.details as string[]) || [],
       }
 
-      this.callbacks.onToolResult?.(functionName, true, `Task completed: ${taskResult.summary}`)
+      this.callbacks.onToolResult?.(functionName, true, `Task completed: ${taskResult.summary}`, args)
 
       return {
         message: {
@@ -375,6 +497,7 @@ export class AgentCore {
           content: "Task marked as complete",
         },
         isCompletion: true,
+        success: true,
         taskResult,
       }
     }
@@ -392,6 +515,7 @@ export class AgentCore {
           content: "Thought recorded. Continue with your plan.",
         },
         isCompletion: false,
+        success: true,
       }
     }
 
@@ -423,6 +547,7 @@ export class AgentCore {
           content: feedback,
         },
         isCompletion: false,
+        success: true,
       }
     }
 
@@ -437,6 +562,7 @@ export class AgentCore {
           content: `User responded: ${answer}`,
         },
         isCompletion: false,
+        success: true,
       }
     }
 
@@ -453,6 +579,7 @@ export class AgentCore {
           content: "Discovery saved to persistent memory.",
         },
         isCompletion: false,
+        success: true,
       }
     }
 
@@ -467,7 +594,7 @@ export class AgentCore {
       success: result.success,
     })
 
-    this.callbacks.onToolResult?.(functionName, result.success, result.output)
+    this.callbacks.onToolResult?.(functionName, result.success, result.output, args)
 
     return {
       message: {
@@ -476,6 +603,7 @@ export class AgentCore {
         content: result.output,
       },
       isCompletion: false,
+      success: result.success,
     }
   }
 
@@ -522,32 +650,21 @@ export class AgentCore {
 
       let continueLoop = true
       let stepCount = 0
+      let consecutiveFailures = 0
+      const MAX_CONSECUTIVE_FAILURES = 3
 
       while (continueLoop && stepCount < this.config.maxSteps) {
         stepCount++
 
-        const response = await this.openai.chat.completions.create({
-          model: this.config.model,
-          messages: history,
-          tools: this.openaiTools,
-          tool_choice: "auto",
-          parallel_tool_calls: true,
-        })
+        const { message, usage } = await this.streamedCompletion(history)
 
-        const callDelta = this.usage.record(response.usage)
+        const callDelta = this.usage.record(usage)
         this.callbacks.onApiCall?.({
           ...callDelta,
           totalCostUSD: this.usage.getStats().estimatedCostUSD,
         })
 
-        const message = response.choices[0]?.message
-        if (!message) break
-
         history.push(message as ChatCompletionMessageParam)
-
-        if (message.content) {
-          console.log(`\n  ${message.content}`)
-        }
 
         if (message.tool_calls && message.tool_calls.length > 0) {
           // Execute in parallel
@@ -560,6 +677,18 @@ export class AgentCore {
           }
 
           const results = await this.handleToolCallsParallel(message.tool_calls, tempState)
+
+          // Track consecutive failures: a batch counts as failed if every tool in it failed
+          const batchAllFailed = results.every((r) => !r.isCompletion && !r.success)
+          if (batchAllFailed) {
+            consecutiveFailures++
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              console.log(`\n  ! Stopped after ${MAX_CONSECUTIVE_FAILURES} consecutive tool failures. Try rephrasing your request.\n`)
+              continueLoop = false
+            }
+          } else {
+            consecutiveFailures = 0
+          }
 
           for (const result of results) {
             history.push(result.message)
@@ -574,6 +703,8 @@ export class AgentCore {
           continueLoop = false
         }
       }
+
+      this.callbacks.onTaskEnd?.()
     }
   }
 }

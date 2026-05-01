@@ -1,5 +1,45 @@
 import type { ToolDefinition, ToolResult, AgentConfig } from "../agent/types";
 
+function validateHttpUrl(url: string): { ok: true; url: string } | { ok: false; reason: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, reason: "Invalid URL." };
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, reason: "Only http/https URLs are allowed." };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  // Block obvious local/metadata hosts by name.
+  if (host === "localhost" || host === "localdomain" || host.endsWith(".local")) {
+    return { ok: false, reason: "Local network hosts are not allowed." };
+  }
+  if (host === "169.254.169.254" || host === "metadata.google.internal") {
+    return { ok: false, reason: "Metadata endpoints are not allowed." };
+  }
+
+  // NOTE: full private-range blocking requires DNS/IP resolution; keep this name-based guard + disallow common ranges.
+  // If the hostname is a literal IP, block private ranges.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const [a, b] = host.split(".").map((n) => parseInt(n, 10));
+    // 10.0.0.0/8
+    if (a === 10) return { ok: false, reason: "Private IP range blocked." };
+    // 172.16.0.0/12
+    if (a === 172 && b >= 16 && b <= 31) return { ok: false, reason: "Private IP range blocked." };
+    // 192.168.0.0/16
+    if (a === 192 && b === 168) return { ok: false, reason: "Private IP range blocked." };
+    // 127.0.0.0/8
+    if (a === 127) return { ok: false, reason: "Loopback blocked." };
+    // 0.0.0.0/8
+    if (a === 0) return { ok: false, reason: "Invalid/unspecified range blocked." };
+  }
+
+  return { ok: true, url: parsed.toString() };
+}
+
 /**
  * HTTP tools for API calls and web scraping
  */
@@ -21,6 +61,11 @@ async function httpRequest(
   }
 
   try {
+    const safeUrl = validateHttpUrl(url);
+    if (!safeUrl.ok) {
+      return { success: false, output: `HTTP request blocked: ${safeUrl.reason}` };
+    }
+
     const requestInit: RequestInit = {
       method,
       headers: {
@@ -41,7 +86,10 @@ async function httpRequest(
       }
     }
 
-    const response = await fetch(url, requestInit);
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
+    const response = await fetch(safeUrl.url, { ...requestInit, signal: controller.signal });
+    clearTimeout(t);
     const contentType = response.headers.get("content-type") || "";
 
     let responseBody: string;
@@ -96,11 +144,21 @@ async function checkHealth(
   }
 
   try {
+    const safeUrl = validateHttpUrl(url);
+    if (!safeUrl.ok) {
+      return { success: false, output: `Health check blocked: ${safeUrl.reason}`, metadata: { healthy: false } };
+    }
+
     const startTime = Date.now();
-    const response = await fetch(url, {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(safeUrl.url, {
       method: "GET",
       headers: { "User-Agent": "Agile-DevOps-Agent/1.0" },
+      signal: controller.signal,
+      redirect: "follow",
     });
+    clearTimeout(t);
     const responseTime = Date.now() - startTime;
 
     const isHealthy = response.status === expectedStatus;
@@ -143,12 +201,22 @@ async function fetchWebPage(
   }
 
   try {
-    const response = await fetch(url, {
+    const safeUrl = validateHttpUrl(url);
+    if (!safeUrl.ok) {
+      return { success: false, output: `Fetch web page blocked: ${safeUrl.reason}` };
+    }
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
+    const response = await fetch(safeUrl.url, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (compatible; Agile-DevOps-Agent/1.0; +https://github.com/agile)",
       },
+      signal: controller.signal,
+      redirect: "follow",
     });
+    clearTimeout(t);
 
     if (!response.ok) {
       return {

@@ -40,6 +40,19 @@ function isCommandSafe(command: string): { safe: boolean; reason?: string } {
     }
   }
 
+  // Block genuine injection vectors: bare backtick subst, literal newline/carriage-return
+  // injection, and null bytes. Allow &&, ||, |, ;, <, >, $, which are all normal shell
+  // operators needed for legitimate commands (e.g. "node -v && npm -v", "cat file | grep x").
+  const injectionChars = /[`\x00\r\n]/;
+  if (injectionChars.test(command)) {
+    return { safe: false, reason: "Command contains disallowed characters (backtick or newline injection)." };
+  }
+
+  // Disallow wildcard redirection style.
+  if (command.includes("/dev/")) {
+    return { safe: false, reason: "/dev/* access is blocked." };
+  }
+
   return { safe: true };
 }
 

@@ -4,6 +4,7 @@ import { Command } from "commander"
 import chalk from "chalk"
 import * as readline from "readline"
 import * as fs from "fs"
+import OpenAI from "openai"
 import { parse as parseEnv } from "dotenv"
 import {
   getCliConfigPath,
@@ -21,7 +22,7 @@ import {
 } from "./agent"
 import packageJson from "../package.json"
 
-// â”€â”€ Env Loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Env Loading -------------------------------------------------------------
 
 type EnvSource = "shell" | ".env" | ".env.local" | "config" | "unset"
 const _sourceByKey = new Map<string, string>()
@@ -54,11 +55,11 @@ function initEnv(): void {
 
 initEnv()
 
-// â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Constants ---------------------------------------------------------------
 
 const VERSION = packageJson.version
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Helpers -----------------------------------------------------------------
 
 function rl_question(rl: readline.Interface, question: string): Promise<string> {
   return new Promise<string>((resolve) => rl.question(question, resolve))
@@ -100,36 +101,125 @@ async function resolveModel(cliModel?: string): Promise<string> {
 
 // -- Model Picker -------------------------------------------------------------
 
-const KNOWN_MODELS = [
-  { id: "gpt-4o-mini",  label: "GPT-4o mini",   desc: "Cheapest & fastest, great for most tasks",    price: "$0.15/1M in" },
-  { id: "gpt-4o",       label: "GPT-4o",         desc: "Best overall, fast",                          price: "$2.50/1M in" },
-  { id: "gpt-5-mini",   label: "GPT-5 mini",     desc: "Fast + very capable",                        price: "$0.50/1M in" },
-  { id: "gpt-5",        label: "GPT-5",           desc: "Most capable",                               price: "$5.00/1M in" },
-  { id: "o1-mini",      label: "o1-mini",         desc: "Chain-of-thought reasoning",                 price: "$3.00/1M in" },
-  { id: "o1-preview",   label: "o1-preview",      desc: "Advanced reasoning",                        price: "$15.00/1M in" },
-  { id: "gpt-4-turbo",  label: "GPT-4 Turbo",    desc: "High quality, long context",                 price: "$10.00/1M in" },
-]
-
-async function selectModel(rl: readline.Interface, currentModel: string): Promise<string> {
-  console.log()
-  console.log(chalk.bold("  Choose a model:"))
-  console.log()
-  KNOWN_MODELS.forEach((m, i) => {
-    const active = m.id === currentModel
-    const marker = active ? chalk.cyan("*") : " "
-    const num = chalk.dim(`${i + 1}.`)
-    const label = active ? chalk.cyan.bold(m.label.padEnd(14)) : chalk.white(m.label.padEnd(14))
-    console.log(`  ${marker} ${num} ${label}  ${chalk.gray(m.desc.padEnd(42))}  ${chalk.dim(m.price)}`)
-  })
-  console.log()
-  const ans = (await rl_question(rl, chalk.bold(`  [1-${KNOWN_MODELS.length}] or model ID: `))).trim()
-  if (!ans) return currentModel
-  const n = parseInt(ans, 10)
-  if (!isNaN(n) && n >= 1 && n <= KNOWN_MODELS.length) return KNOWN_MODELS[n - 1].id
-  return ans // allow typing a custom model ID
+// -- Pricing hints (input / output per 1M tokens)  source: https://openai.com/api/pricing 
+const MODEL_PRICE_HINT: Record<string, string> = {
+  "gpt-3.5-turbo":                         "$0.50 / $1.50",
+  "gpt-3.5-turbo-0125":                    "$0.50 / $1.50",
+  "gpt-3.5-turbo-1106":                    "$0.50 / $1.50",
+  "gpt-3.5-turbo-16k":                     "$3.00 / $4.00",
+  "gpt-4":                                 "$30.00 / $60.00",
+  "gpt-4-0613":                            "$30.00 / $60.00",
+  "gpt-4-turbo":                           "$10.00 / $30.00",
+  "gpt-4-turbo-2024-04-09":               "$10.00 / $30.00",
+  "gpt-4.1":                               "$2.00 / $8.00",
+  "gpt-4.1-2025-04-14":                    "$2.00 / $8.00",
+  "gpt-4.1-mini":                          "$0.40 / $1.60",
+  "gpt-4.1-mini-2025-04-14":               "$0.40 / $1.60",
+  "gpt-4.1-nano":                          "$0.10 / $0.40",
+  "gpt-4.1-nano-2025-04-14":               "$0.10 / $0.40",
+  "gpt-4o":                                "$2.50 / $10.00",
+  "gpt-4o-2024-05-13":                     "$2.50 / $10.00",
+  "gpt-4o-2024-08-06":                     "$2.50 / $10.00",
+  "gpt-4o-2024-11-20":                     "$2.50 / $10.00",
+  "gpt-4o-mini":                           "$0.15 / $0.60",
+  "gpt-4o-mini-2024-07-18":                "$0.15 / $0.60",
+  "gpt-4o-search-preview":                 "$2.50 / $10.00",
+  "gpt-4o-search-preview-2025-03-11":      "$2.50 / $10.00",
+  "gpt-4o-mini-search-preview":            "$0.15 / $0.60",
+  "gpt-4o-mini-search-preview-2025-03-11": "$0.15 / $0.60",
+  "gpt-5":                                 "$5.00 / $20.00",
+  "gpt-5-2025-08-07":                      "$5.00 / $20.00",
+  "gpt-5-chat-latest":                     "$5.00 / $20.00",
+  "gpt-5-mini":                            "$0.50 / $2.00",
+  "gpt-5-mini-2025-08-07":                 "$0.50 / $2.00",
+  "gpt-5-nano":                            "$0.20 / $1.00",
+  "gpt-5-nano-2025-08-07":                 "$0.20 / $1.00",
+  "gpt-5-pro":                             "$30.00 / $150.00",
+  "gpt-5.3-chat-latest":                   "$1.75 / $14.00",
+  "gpt-5.4":                               "$2.50 / $15.00",
+  "gpt-5.4-2026-03-05":                    "$2.50 / $15.00",
+  "gpt-5.4-mini":                          "$0.75 / $4.50",
+  "gpt-5.4-mini-2026-03-17":               "$0.75 / $4.50",
+  "gpt-5.4-nano":                          "$0.20 / $1.25",
+  "gpt-5.4-nano-2026-03-17":               "$0.20 / $1.25",
+  "gpt-5.4-pro":                           "$30.00 / $180.00",
+  "gpt-5.5":                               "$5.00 / $30.00",
+  "gpt-5.5-2026-04-23":                    "$5.00 / $30.00",
+  "gpt-5.5-pro":                           "$30.00 / $180.00",
+  "o1":                                    "$15.00 / $60.00",
+  "o1-2024-12-17":                         "$15.00 / $60.00",
+  "o1-mini":                               "$3.00 / $12.00",
+  "o1-preview":                            "$15.00 / $60.00",
+  "o1-pro":                                "$150.00 / $600.00",
+  "o1-pro-2025-03-19":                     "$150.00 / $600.00",
+  "o3":                                    "$10.00 / $40.00",
+  "o3-2025-04-16":                         "$10.00 / $40.00",
+  "o3-mini":                               "$1.10 / $4.40",
+  "o3-mini-2025-01-31":                    "$1.10 / $4.40",
+  "o4-mini":                               "$1.10 / $4.40",
+  "o4-mini-2025-04-16":                    "$1.10 / $4.40",
 }
 
-// â”€â”€ First-launch Setup Wizard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Substrings / prefixes that identify non-chat models to hide from the picker
+const EXCLUDE_CONTAINS = ["-audio", "-realtime", "-transcribe", "-tts", "-instruct", "-codex", "-search-api"]
+const EXCLUDE_PREFIXES = [
+  "tts-", "whisper-", "dall-e", "text-embedding", "babbage", "davinci", "curie", "ada",
+  "chatgpt-image", "gpt-audio", "gpt-image", "gpt-realtime", "sora", "omni-moderation",
+]
+
+async function fetchChatModels(apiKey: string): Promise<string[]> {
+  try {
+    const oai = new OpenAI({ apiKey })
+    const page = await oai.models.list()
+    return page.data
+      .map((m) => m.id)
+      .filter((id) => {
+        if (EXCLUDE_PREFIXES.some((p) => id.startsWith(p))) return false
+        if (EXCLUDE_CONTAINS.some((s) => id.includes(s))) return false
+        return true
+      })
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+async function selectModel(rl: readline.Interface, currentModel: string, apiKey?: string): Promise<string> {
+  console.log()
+  console.log(chalk.dim("  Fetching models..."))
+
+  const key = apiKey || (await resolveApiKey()).value
+  const models = key ? await fetchChatModels(key) : []
+
+  if (models.length === 0) {
+    // Fallback: plain text input
+    const ans = (await rl_question(rl, chalk.bold(`  Model ID [${currentModel}]: `))).trim()
+    return ans || currentModel
+  }
+
+  process.stdout.write("\x1B[1A\x1B[2K") // clear "Fetching..." line
+
+  console.log(chalk.bold("  Choose a model:"))
+  console.log()
+
+  models.forEach((id, i) => {
+    const active = id === currentModel
+    const marker = active ? chalk.cyan("*") : " "
+    const num = chalk.dim(`${(i + 1).toString().padStart(3)}.`)
+    const label = active ? chalk.cyan.bold(id.padEnd(44)) : chalk.white(id.padEnd(44))
+    const price = chalk.dim(MODEL_PRICE_HINT[id] || "")
+    console.log(`  ${marker} ${num} ${label}  ${price}`)
+  })
+
+  console.log()
+  const ans = (await rl_question(rl, chalk.bold(`  [1-${models.length}] or model ID: `))).trim()
+  if (!ans) return currentModel
+  const n = parseInt(ans, 10)
+  if (!isNaN(n) && n >= 1 && n <= models.length) return models[n - 1]
+  return ans
+}
+
+// -- First-launch Setup Wizard -----------------------------------------------
 
 async function runSetupWizard(): Promise<{ apiKey: string; model: string }> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -151,7 +241,7 @@ async function runSetupWizard(): Promise<{ apiKey: string; model: string }> {
   const config = await loadCliConfig()
   const currentModel = config.defaultModelRef || "gpt-4o-mini"
 
-  const model = await selectModel(rl, currentModel)
+  const model = await selectModel(rl, currentModel, apiKey)
 
   rl.close()
 
@@ -167,7 +257,7 @@ async function runSetupWizard(): Promise<{ apiKey: string; model: string }> {
   return { apiKey, model }
 }
 
-// â”€â”€ Session Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Session Header ----------------------------------------------------------
 
 function printWelcome(model: string, workDir: string): void {
   const home = process.env.HOME || process.env.USERPROFILE || ""
@@ -182,7 +272,7 @@ function printWelcome(model: string, workDir: string): void {
   console.log()
 }
 
-// â”€â”€ Agent Callbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Agent Callbacks ---------------------------------------------------------
 
 const TOOL_LABELS: Record<string, string> = {
   read_file: "Reading",
@@ -201,16 +291,59 @@ const TOOL_LABELS: Record<string, string> = {
   copy_file: "Copying",
 }
 
-function buildCallbacks(verbose: boolean): AgentCallbacks {
+function buildCallbacks(verbose: boolean, rl?: readline.Interface): AgentCallbacks {
   const warnedThresholds = new Set<number>()
   const COST_WARN_THRESHOLDS = [1, 5, 10]
 
+  // ---- file-change tracking ------------------------------------------------
+  type FileDelta = { op: "edited" | "created" | "deleted"; added: number; removed: number }
+  const fileChanges = new Map<string, FileDelta>()
+
+  function recordFileChange(path: string, op: "edited" | "created" | "deleted", added: number, removed: number) {
+    const prev = fileChanges.get(path)
+    if (prev) {
+      // Merge: keep "created" if it was already created in this task
+      fileChanges.set(path, { op: prev.op === "created" ? "created" : op, added: prev.added + added, removed: prev.removed + removed })
+    } else {
+      fileChanges.set(path, { op, added, removed })
+    }
+  }
+  // --------------------------------------------------------------------------
+
+  // Track whether a dim "..." waiting indicator is on the current line
+  let waitingShown = false
+  function clearWaiting() {
+    if (waitingShown) {
+      process.stdout.write("\r\x1b[2K")
+      waitingShown = false
+    }
+  }
+
   return {
     onStep: () => {},
-    onThinking: (thought) => {
-      if (verbose) console.log(chalk.dim(`\n  ~ ${thought}`))
+    onApiStart: () => {
+      process.stdout.write(chalk.dim("  ..."))
+      waitingShown = true
+    },
+    onThinking: (thought, plan) => {
+      clearWaiting()
+      console.log(chalk.dim("  ~ " + thought))
+      if (plan && plan.length > 0) {
+        plan.forEach((step, i) => console.log(chalk.dim(`    ${i + 1}. ${step}`)))
+      }
+    },
+    onStreamStart: () => {
+      clearWaiting()
+      process.stdout.write("  ")
+    },
+    onStreamChunk: (text) => {
+      process.stdout.write(text)
+    },
+    onStreamEnd: () => {
+      process.stdout.write("\n")
     },
     onToolCall: (name, args) => {
+      clearWaiting()
       const label = TOOL_LABELS[name] || name
       let detail = ""
       if (typeof args.path === "string") detail = ` ${args.path}`
@@ -220,13 +353,45 @@ function buildCallbacks(verbose: boolean): AgentCallbacks {
       else if (typeof args.query === "string") detail = ` ${args.query}`
       console.log(chalk.gray(`  > ${label}${detail}`))
     },
-    onToolResult: (_name, success, output) => {
+    onToolResult: (name, success, output, args) => {
       if (!success) {
         const preview = output.replace(/\n/g, " ").slice(0, 120)
         console.log(chalk.red(`  ! ${preview}`))
+        return
+      }
+
+      // File-edit: show inline line delta and record for summary
+      if (name === "replace_in_file" && typeof args.path === "string") {
+        const oldStr = typeof args.old_str === "string" ? args.old_str : ""
+        const newStr = typeof args.new_str === "string" ? args.new_str : ""
+        const removed = oldStr ? oldStr.split("\n").length : 0
+        const added = newStr ? newStr.split("\n").length : 0
+        const parts: string[] = []
+        if (added > 0) parts.push(chalk.green(`+${added}`))
+        if (removed > 0) parts.push(chalk.red(`-${removed}`))
+        if (parts.length > 0) console.log(chalk.dim(`    ↳ ${parts.join("  ")} lines`))
+        recordFileChange(args.path, "edited", added, removed)
+
+      } else if (name === "write_file" && typeof args.path === "string") {
+        const content = typeof args.content === "string" ? args.content : ""
+        const lines = content.split("\n").length
+        console.log(chalk.dim(`    ↳ ${lines} lines`))
+        // Treat as "created" initially; if later replaced it'll stay "edited"
+        recordFileChange(args.path, "created", lines, 0)
+
+      } else if (name === "delete_file" && typeof args.path === "string") {
+        recordFileChange(args.path, "deleted", 0, 0)
+
+      } else if ((name === "execute_command" || name === "shell_command" || name === "run_command") && output) {
+        // Show first non-empty output line for command success feedback
+        const firstLine = output.split("\n").find((l) => l.trim().length > 0)
+        if (firstLine && firstLine.length < 100) {
+          console.log(chalk.dim(`    ↳ ${firstLine.trim()}`))
+        }
       }
     },
     onApiCall: ({ costUSD, promptTokens, completionTokens, totalCostUSD }) => {
+      clearWaiting()
       const tokens = promptTokens + completionTokens
       if (tokens > 0) {
         const kTok = (tokens / 1000).toFixed(1)
@@ -239,13 +404,41 @@ function buildCallbacks(verbose: boolean): AgentCallbacks {
         }
       }
     },
-    onUserQuestion: createInteractiveInputHandler(),
+    onTaskEnd: () => {
+      if (fileChanges.size === 0) return
+      console.log()
+      const pathWidth = Math.min(50, Math.max(...Array.from(fileChanges.keys()).map((p) => p.length)))
+      for (const [p, change] of fileChanges) {
+        const opLabel =
+          change.op === "created" ? chalk.green("created") :
+          change.op === "deleted" ? chalk.red("deleted") :
+          chalk.yellow("edited ")
+        let detail = ""
+        if (change.op === "edited") {
+          const parts: string[] = []
+          if (change.added > 0) parts.push(chalk.green(`+${change.added}`))
+          if (change.removed > 0) parts.push(chalk.red(`-${change.removed}`))
+          detail = parts.length > 0 ? `  ${parts.join("  ")}` : ""
+        } else if (change.op === "created") {
+          detail = chalk.dim(`  ${change.added} lines`)
+        }
+        console.log(`  ${opLabel}  ${chalk.cyan(p.padEnd(pathWidth))}${detail}`)
+      }
+      console.log()
+      fileChanges.clear()
+    },
+    onUserQuestion: rl
+      ? async (question: string) => {
+          const ans = await rl_question(rl, `\n[Agent asks] ${question}\n> `)
+          return ans.trim()
+        }
+      : createInteractiveInputHandler(),
   }
 }
 
-// â”€â”€ Settings Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Settings Panel ----------------------------------------------------------
 
-async function showSettings(rl: readline.Interface, sessionUsage: UsageStats): Promise<void> {
+async function showSettings(rl: readline.Interface, sessionUsage: UsageStats, agent?: { setModel(m: string): void }): Promise<void> {
   const config = await loadCliConfig()
   const apiResolved = await resolveApiKey()
   const model = config.defaultModelRef || "gpt-4o-mini"
@@ -289,11 +482,12 @@ async function showSettings(rl: readline.Interface, sessionUsage: UsageStats): P
   const choice = (await rl_question(rl, chalk.bold("  > "))).trim().toLowerCase()
 
   if (choice === "m") {
-    const newModel = await selectModel(rl, model)
+    const newModel = await selectModel(rl, model, config.apiKey)
     if (newModel !== model) {
       config.defaultModelRef = newModel
       await saveCliConfig(config)
-      console.log(chalk.green(`  Model set to ${newModel}  (takes effect next session)`))
+      agent?.setModel(newModel)
+      console.log(chalk.green(`  Model switched to ${newModel}`))
     }
   } else if (choice === "k") {
     const raw = (await rl_question(rl, "  New API key: ")).trim()
@@ -308,7 +502,7 @@ async function showSettings(rl: readline.Interface, sessionUsage: UsageStats): P
   console.log()
 }
 
-// â”€â”€ Help â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Help --------------------------------------------------------------------
 
 function printHelp(): void {
   console.log()
@@ -324,7 +518,7 @@ function printHelp(): void {
   console.log()
 }
 
-// â”€â”€ Print one-shot result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Print one-shot result ---------------------------------------------------
 
 function printResult(
   result: { success: boolean; summary: string; details?: string[]; errors?: string[] },
@@ -350,7 +544,7 @@ function printResult(
   )
 }
 
-// â”€â”€ Save lifetime usage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Save lifetime usage -----------------------------------------------------
 
 async function saveLifetimeUsage(usage: UsageStats): Promise<void> {
   if (usage.totalTokens === 0) return
@@ -368,7 +562,7 @@ async function saveLifetimeUsage(usage: UsageStats): Promise<void> {
   }
 }
 
-// â”€â”€ Interactive REPL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Interactive REPL --------------------------------------------------------
 
 async function startRepl(
   apiKey: string,
@@ -377,17 +571,9 @@ async function startRepl(
   verbose: boolean,
   dryRun: boolean,
 ): Promise<void> {
-  const callbacks = buildCallbacks(verbose)
-  const agent = createAgent(
-    apiKey,
-    { model, maxSteps: 30, verbose, dryRun, workingDirectory: workDir },
-    callbacks,
-  )
-
-  printWelcome(model, workDir)
-  if (dryRun) console.log(chalk.yellow.bold("  [DRY RUN]\n"))
-
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  const callbacks = buildCallbacks(verbose, rl)
+  const agent = createAgent(apiKey, { model, workingDirectory: workDir, verbose, dryRun }, callbacks)
 
   // Generator that intercepts /help and /settings before the agent sees them
   async function* sessionIterator(): AsyncGenerator<string> {
@@ -407,7 +593,7 @@ async function startRepl(
       }
 
       if (trimmed === "/settings") {
-        await showSettings(rl, agent.getUsage().getStats())
+        await showSettings(rl, agent.getUsage().getStats(), agent)
         continue
       }
 
@@ -431,7 +617,7 @@ async function startRepl(
   }
 }
 
-// â”€â”€ One-shot Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- One-shot Task -----------------------------------------------------------
 
 async function runTask(
   task: string,
@@ -442,14 +628,7 @@ async function runTask(
   dryRun: boolean,
 ): Promise<void> {
   const callbacks = buildCallbacks(verbose)
-  const agent = createAgent(
-    apiKey,
-    { model, maxSteps: 30, verbose, dryRun, workingDirectory: workDir },
-    callbacks,
-  )
-
-  console.log()
-  if (verbose) console.log(chalk.gray(`  Model: ${model}\n`))
+  const agent = createAgent(apiKey, { model, workingDirectory: workDir, verbose, dryRun }, callbacks)
   if (dryRun) console.log(chalk.yellow.bold("  [DRY RUN]\n"))
 
   let result
@@ -471,7 +650,7 @@ async function runTask(
   process.exit(result.success ? 0 : 1)
 }
 
-// â”€â”€ CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- CLI ---------------------------------------------------------------------
 
 const program = new Command()
 
@@ -484,7 +663,7 @@ program
   .option("-d, --directory <path>", "Working directory", process.cwd())
   .option("-m, --model <model>", "Model to use (overrides config)")
 
-// â”€â”€ setup subcommand â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- setup subcommand --------------------------------------------------------
 
 program
   .command("setup")
@@ -493,7 +672,7 @@ program
     await runSetupWizard()
   })
 
-// â”€â”€ Default: REPL or one-shot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Default: REPL or one-shot -----------------------------------------------
 
 program
   .argument("[task...]", "Task to run (omit for interactive mode)")

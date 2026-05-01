@@ -27,7 +27,7 @@
     "agile:analyze": "tsx src/cli.ts analyze",
     "agile:deploy": "tsx src/cli.ts deploy",
     "agile:interactive": "tsx src/cli.ts interactive",
-    "test": "tsx src/agent/usage.test.ts",
+    "test": "tsx --test src/agent/usage.test.ts",
     "typecheck": "npm run typecheck:cli",
     "typecheck:cli": "tsc --project tsconfig.cli.json --noEmit",
     "pack": "npm pack",
