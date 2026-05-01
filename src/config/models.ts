@@ -12,6 +12,12 @@ export interface ModelProfile {
   updatedAt: string
 }
 
+export interface LifetimeUsage {
+  sessions: number
+  totalTokens: number
+  estimatedCostUSD: number
+}
+
 export interface AgileCliConfig {
   version: 1
   apiKey?: string
@@ -19,6 +25,7 @@ export interface AgileCliConfig {
   defaultProfile?: string
   profiles: Record<string, ModelProfile>
   aliases: Record<string, string>
+  lifetimeUsage?: LifetimeUsage
 }
 
 export interface ModelResolution {
@@ -56,6 +63,7 @@ export async function loadCliConfig(): Promise<AgileCliConfig> {
       defaultProfile: parsed.defaultProfile,
       profiles: parsed.profiles || {},
       aliases: parsed.aliases || {},
+      lifetimeUsage: parsed.lifetimeUsage,
     }
   } catch {
     return createDefaultConfig()

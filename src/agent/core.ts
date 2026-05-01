@@ -487,12 +487,6 @@ export class AgentCore {
       { role: "system", content: `${SYSTEM_PROMPT}\n\n${memoryContext}` },
     ]
 
-    console.log("\n[Interactive Mode] Type your requests. Use 'exit' or 'quit' to end.")
-    if (persistedMemory && persistedMemory.discoveries.length > 0) {
-      console.log(`[Memory] ${persistedMemory.discoveries.length} discoveries from previous runs loaded.`)
-    }
-    console.log()
-
     for await (const input of readlineIterator) {
       const trimmed = input.trim()
 
@@ -504,18 +498,18 @@ export class AgentCore {
         } catch {
           // ignore
         }
-        console.log("\nGoodbye!")
+        console.log("\n  Goodbye!\n")
         break
       }
 
       if (trimmed === "/usage") {
-        console.log("\n" + this.usage.format() + "\n")
+        console.log("\n  Usage: " + this.usage.format().replace(/\n/g, "\n  ") + "\n")
         continue
       }
 
       if (trimmed === "/clear") {
         history.length = 1 // Keep system prompt
-        console.log("\n[History cleared]\n")
+        console.log("\n  History cleared.\n")
         continue
       }
 
@@ -543,7 +537,7 @@ export class AgentCore {
         history.push(message as ChatCompletionMessageParam)
 
         if (message.content) {
-          console.log(`\n[Agent]: ${message.content}`)
+          console.log(`\n  ${message.content}`)
         }
 
         if (message.tool_calls && message.tool_calls.length > 0) {
@@ -563,7 +557,7 @@ export class AgentCore {
             if (result.isCompletion) {
               continueLoop = false
               if (result.taskResult) {
-                console.log(`\n[Done] ${result.taskResult.summary}`)
+                console.log(`\n  ${result.taskResult.summary}\n`)
               }
             }
           }
