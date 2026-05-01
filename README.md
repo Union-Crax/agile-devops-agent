@@ -108,7 +108,7 @@ while (!task.isComplete && steps < maxSteps) {
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/agile-devops-agent.git
+git clone https://github.com/Union-Crax/agile-devops-agent.git
 cd agile-devops-agent
 
 # Install dependencies
